@@ -104,22 +104,29 @@ bar renders correctly even before the marker is applied.
 1. A fixed-position layer is appended to `document.body` and placed from the scroll container's
    `getBoundingClientRect()`: to the left of the 14px bar (`right - scrollbarWidth - 6px - 80px`), with
    the container's top and height. It is `z-index:30`, read-only and never takes layout space.
-2. The anchor is cloned, sanitized in one tree walk, and transformed with `scale(sx, sy)
-   translate(...)`. Slot anchors render with `display: contents` (the outlet wrapper takes no box), so
-   the clone is forced to `display: block`, sized from the pane's content width, and its chat column is
-   measured from the pane's left edge. The horizontal scale is the preview width over the *measured chat
-   column* width — the widest descendant that is narrower than 95% of the pane — so the preview matches
-   what the messages look like, not the empty gutter around them.
-3. The vertical scale is uniform until the scaled content is shorter than the preview; then it
-   stretches to fill it.
-4. The same scale maps `scrollTop` to the slider's top/height and pointer positions back to
-   `scrollTop`; slider drags and click-to-jump share one mapping.
-5. A `MutationObserver` on the anchor rebuilds the clone (trailing 350 ms debounce), a
+2. The chat column is measured on the **live** tree: every message row is a `[data-chat-flow-kind]`
+   flex child of a column capped at `max-width: var(--dsh-chat-content-width)` and centred, so a
+   rendered row reports the column width exactly. Measuring the clone instead would be wrong — the
+   clone is detached from the ancestors that publish that CSS variable, so its rows reflow to the
+   full pane width.
+3. The anchor is cloned, sanitized in one tree walk, and given its own layout box: slot anchors render
+   with `display: contents` (the outlet wrapper takes no box), so the clone is forced to
+   `display: block`, sized from the pane's content width, and handed the measured column width as
+   `--dsh-chat-content-width`. It is appended untransformed first, because the natural height is what
+   the preview is fitted to.
+4. The clone is transformed with `scale(sx, sy) translate(-columnLeft, 0)`: `sx = 80px / columnWidth`
+   and `sy = paneHeight / naturalHeight`, so the preview always fills the pane the way VS Code's
+   minimap fits a file into its column.
+5. The slider is derived from the **scroller's own numbers**, not from the scaled clone: thumb height
+   is the viewport fraction of `scrollHeight`, its position the fraction of the scrollable range. The
+   same mapping inverts pointer positions back to `scrollTop`, so click-to-jump and drags stay in step
+   with the real scrollbar.
+6. A `MutationObserver` on the anchor rebuilds the clone (trailing 350 ms debounce), a
    `ResizeObserver` plus a window resize listener re-measure the column and pane, and scroll events
    schedule a rAF-throttled slider update.
-6. A body `MutationObserver` re-tags columns when the conversation re-renders, sessions switch, or a
+7. A body `MutationObserver` re-tags columns when the conversation re-renders, sessions switch, or a
    split view opens; scans are coalesced to at most one per 120 ms so streaming stays cheap.
-7. Everything hangs off the plugin effect: the stylesheet, layer, markers, observers and listeners are
+8. Everything hangs off the plugin effect: the stylesheet, layer, markers, observers and listeners are
    all removed on disposal, so disabling the plugin restores the stock UI without a reload.
 
 ## Configuration
@@ -147,6 +154,10 @@ settings of its own.
 
 ## What's new
 
+- **1.1.2** — fixes the minimap against the real conversation: the chat column is measured from the
+  live `[data-chat-flow-kind]` rows (a detached clone reflows to the full pane), images stay in the
+  preview so its height matches the conversation, the preview is fitted to the pane, and the slider
+  now uses the scroll container's own viewport/scroll ratio, so it tracks the 14px scrollbar exactly.
 - **1.1.1** — fixes the minimap layout: slot anchors are `display: contents`, so the preview clone now
   gets its own box instead of reflowing inside the 80px column.
 - **1.1.0** — adds the VS Code minimap preview column next to the scrollbar.
@@ -174,8 +185,9 @@ node test/harness.mjs client.js
 
 It stubs the DOM, layout rectangles and the observers, and asserts: the stylesheet is attached once;
 the nearest scrollable ancestor of a conversation anchor is tagged while a non-scrollable wrapper is
-left alone; a re-rendered conversation is re-tagged; the minimap measures the chat column, scales the
-clone and positions the slider from the scroll position; a click maps back to `scrollTop`; the preview
+left alone; the minimap measures the chat column from the live message rows, reproduces it on the
+clone, fills the pane, and derives the slider from the scroll container's ratio; scrolling moves only
+the slider; a click maps back to `scrollTop`; dragging the thumb scrolls proportionally; the preview
 hides on a narrow pane and returns when widened; conversation mutations rebuild the clone; and
 disposal removes the sheet, markers, layer, observers and listeners.
 
@@ -191,9 +203,8 @@ npm pack
   the stock bar and no minimap. A 14px bar inside a code block would be noise.
 - The preview is a snapshot refreshed after 350 ms of quiet, not a live mirror: fast streaming shows up
   in steps rather than continuously.
-- Media (images, SVG, canvas, video) is deliberately omitted from the preview, and animations are
-  stripped; the preview shows the text-and-diff shape of the conversation, which is what a minimap is
-  for (and what keeps it inexpensive).
+- The clone keeps images and message structure but drops stateful media — SVG, canvas, video, audio,
+  forms and editors stay out — and events are not cloned, so the preview is inert and cheap.
 - Below 1180px of pane width the minimap hides instead of overlapping messages.
 - If a future Harness build drops the `data-slot="conversation.session"` contract and renames the
   scroll container, the plugin stops applying (it does not break anything); the fix is a selector

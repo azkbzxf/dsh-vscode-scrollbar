@@ -42,10 +42,17 @@ window.__ModuleLoader__.load({
     const MM_MIN_SCROLLER_WIDTH = 1180;
     const MM_SYNC_DELAY_MS = 350;
     const MM_RESIZE_DELAY_MS = 80;
-    const MM_COLUMN_SCAN_LIMIT = 600;
+    const MM_FLOW_PROBE = '[data-chat-flow-kind]';
+    // Rows that are outside the conversation's rendering window are hidden and
+    // measure 0, so walk far enough to reach a rendered one.
+    const MM_COLUMN_SCAN_LIMIT = 400;
     const MM_MIN_COLUMN_WIDTH = 160;
+    // Media stays in the clone: images are the biggest part of a chat's height,
+    // and dropping them would make the preview shorter than the conversation and
+    // put the slider out of step with the editor viewport. Buttons stay too —
+    // cloned nodes carry no listeners, and DSH wraps image attachments in them.
     const MM_REMOVE_TAGS = new Set([
-      'audio', 'button', 'canvas', 'dialog', 'embed', 'form', 'iframe', 'img',
+      'audio', 'canvas', 'dialog', 'embed', 'form', 'iframe',
       'input', 'object', 'option', 'select', 'svg', 'textarea', 'video',
     ]);
 
@@ -132,9 +139,7 @@ window.__ModuleLoader__.load({
       syncTimer: 0,
       frame: 0,
       drag: null,
-      column: null,
-      syncs: 0,
-      metrics: { minimapHeight: 0, viewportHeight: 0, contentHeight: 0, scaleY: 1 },
+      metrics: { minimapHeight: 0, viewportHeight: 0, scrollHeight: 0, scaleX: 0, scaleY: 0, thumbHeight: 0 },
     };
 
     function mmCreate(name) {
@@ -177,9 +182,10 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Drop the parts of the clone that would be expensive or interactive
-     * (media, buttons, editors) and every `id`, so the clone never duplicates
-     * document ids or starts playing content a second time.
+     * Drop the parts of the clone that would be expensive, focusable or
+     * otherwise stateful, and every `id`, so the clone never duplicates document
+     * ids, starts playing media a second time, or steals focus. Event listeners
+     * are not cloned, so ordinary nodes (including wrapper buttons) stay inert.
      */
     function mmSanitize(clone) {
       const stack = Array.from(clone.children);
@@ -196,38 +202,25 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The chat column inside the scroll pane is centred and capped (~920px), so
-     * a naive clone at pane width would show a thin strip in the middle of the
-     * minimap. Measure the column from the children that are narrower than the
-     * pane, and fall back to the full width when nothing narrower exists.
+     * The chat column is capped at `max-width: var(--dsh-chat-content-width)` and
+     * centred, and every message row is a `[data-chat-flow-kind]` flex child of
+     * it, so a rendered row reports the column width exactly. Rows outside the
+     * rendering window are hidden (width 0), which is why the scan is generous.
+     * The column is measured on the live tree: the clone is detached from the
+     * ancestors that publish that CSS variable, so its own rows would reflow to
+     * the full pane width.
      */
-    function mmMeasureColumn(anchor, originLeft, anchorWidth) {
-      const anchorLeft = originLeft || 0;
-      const cached = mm.column;
-      if (cached !== null && cached.anchorWidth === anchorWidth && mm.syncs % 8 !== 0) return cached;
-      let left = anchorWidth;
-      let right = 0;
-      let visited = 0;
-      const visit = (element) => {
-        for (const child of Array.from(element.children)) {
-          if (visited >= MM_COLUMN_SCAN_LIMIT) return;
-          visited += 1;
-          const rect = child.getBoundingClientRect();
-          const width = rect.width || 0;
-          if (width >= MM_MIN_COLUMN_WIDTH && width < anchorWidth * 0.95) {
-            const childLeft = (rect.left || 0) - anchorLeft;
-            const childRight = childLeft + width;
-            if (childLeft < left) left = childLeft;
-            if (childRight > right) right = childRight;
-          }
-          visit(child);
-        }
-      };
-      visit(anchor);
-      const usable = right - left >= MM_MIN_COLUMN_WIDTH && left >= -1 && right <= anchorWidth + 1;
-      const column = usable ? { anchorWidth, left, width: right - left } : { anchorWidth, left: 0, width: anchorWidth };
-      mm.column = column;
-      return column;
+    function mmMeasureColumn(anchor, anchorWidth) {
+      const rows = anchor.querySelectorAll(MM_FLOW_PROBE);
+      const limit = Math.min(rows.length, MM_COLUMN_SCAN_LIMIT);
+      for (let index = 0; index < limit; index += 1) {
+        const rect = rows[index].getBoundingClientRect();
+        const rowWidth = rect.width || 0;
+        if (rowWidth < MM_MIN_COLUMN_WIDTH || rowWidth > anchorWidth) continue;
+        // The column is centred in a symmetrically padded pane.
+        return { left: Math.max(0, (anchorWidth - rowWidth) / 2), width: rowWidth };
+      }
+      return { left: 0, width: anchorWidth };
     }
 
     /** Rebuild the clone from the current conversation and re-measure geometry. */
@@ -237,7 +230,6 @@ window.__ModuleLoader__.load({
       if (scroller === null || anchor === null) return;
       mmEnsureNodes();
       if (mm.overlay === null) return;
-      mm.syncs += 1;
 
       const scrollerRect = scroller.getBoundingClientRect();
       const scrollbarWidth = Math.max(0, (scroller.offsetWidth || 0) - (scroller.clientWidth || 0));
@@ -254,25 +246,18 @@ window.__ModuleLoader__.load({
       // content box and measure the chat column from the pane's left edge.
       const anchorBoxWidth = anchorRect.width || 0;
       const anchorWidth = Math.max(1, anchorBoxWidth > 1 ? anchorBoxWidth : (scroller.clientWidth || 1));
-      const anchorOriginLeft = anchorBoxWidth > 1 ? (anchorRect.left || 0) : (scrollerRect.left || 0);
-      const contentHeight = Math.max(anchorRect.height || 0, scroller.scrollHeight || 0, minimapHeight);
+      const scrollHeight = Math.max(1, scroller.scrollHeight || 0);
+      const viewportHeight = minimapHeight;
       const wide = (scroller.clientWidth || 0) >= MM_MIN_SCROLLER_WIDTH;
-      const scrollable = contentHeight > minimapHeight + 4;
+      const scrollable = scrollHeight > viewportHeight + 4;
       if (!wide || !scrollable || width < 32) {
-        mm.metrics = { minimapHeight, viewportHeight: minimapHeight, contentHeight, scaleY: 1 };
+        mm.metrics = { minimapHeight, viewportHeight, scrollHeight, scaleX: 0, scaleY: 0, thumbHeight: 0 };
         mm.overlay.removeAttribute(MM_VISIBLE);
         return;
       }
       mm.overlay.setAttribute(MM_VISIBLE, '');
 
-      const column = mmMeasureColumn(anchor, anchorOriginLeft, anchorWidth);
-      const scaleX = width / column.width;
-      // Uniform scale shows the whole conversation in VS Code's "fit" spirit;
-      // when the scaled content is still taller than the minimap, squash the
-      // rows vertically so everything stays visible and the slider stays honest.
-      const scaleY = contentHeight * scaleX > minimapHeight ? minimapHeight / contentHeight : scaleX;
-      mm.metrics = { minimapHeight, viewportHeight: minimapHeight, contentHeight, scaleY };
-
+      const column = mmMeasureColumn(anchor, anchorWidth);
       const clone = anchor.cloneNode(true);
       mmSanitize(clone);
       clone.setAttribute(MM_CLONE, '');
@@ -281,23 +266,45 @@ window.__ModuleLoader__.load({
       // children would reflow inside the 80px preview instead of shrinking.
       clone.style.display = 'block';
       clone.style.width = Math.round(anchorWidth) + 'px';
-      // Scale, then shift the measured column to x = 0. CSS applies the function
-      // list right to left, so the point maps as x' = scaleX * (x - column.left).
+      // The clone sits outside the conversation body that publishes
+      // `--dsh-chat-content-width`, so hand it the measured column width: without
+      // it every row reflows to the pane width and the preview shows a full-width
+      // blur instead of the centred column.
+      clone.style.setProperty('--dsh-chat-content-width', Math.round(column.width) + 'px');
+      // Append the untransformed clone first: natural height is a layout number,
+      // and getBoundingClientRect only reports it before the transform is applied.
+      mm.preview.replaceChildren(clone);
+      const naturalHeight = Math.max(1, clone.offsetHeight || 0);
+      // VS Code fits the whole document into the minimap: scale the rows so the
+      // preview always fills the pane, then the slider reports where the viewport
+      // sits. Scale, then shift the measured column to x = 0; CSS applies the
+      // function list right to left, so x' = scaleX * (x - column.left).
+      const scaleX = width / Math.max(1, column.width);
+      const scaleY = minimapHeight / naturalHeight;
       clone.style.transform =
         'scale(' + scaleX.toFixed(5) + ',' + scaleY.toFixed(5) + ') translate(' + (-column.left).toFixed(2) + 'px,0px)';
-      mm.preview.replaceChildren(clone);
+
+      // The slider mirrors the scroller's own scrollbar: thumb = viewport
+      // fraction of the content, position = fraction of the scrollable range.
+      // Deriving it from the fitted clone would desynchronise it from the pane.
+      const thumbHeight = Math.max(8, Math.round(minimapHeight * viewportHeight / scrollHeight));
+      mm.metrics = {
+        minimapHeight, viewportHeight, scrollHeight, scaleX, scaleY, thumbHeight,
+        naturalHeight, columnWidth: column.width, columnLeft: column.left,
+      };
       mmSyncSlider();
     }
 
+    /** Position the viewport slider with the scroller's own scrollbar ratio. */
     function mmSyncSlider() {
       if (mm.scroller === null || mm.slider === null) return;
-      const { minimapHeight, viewportHeight, contentHeight, scaleY } = mm.metrics;
-      const height = Math.max(8, Math.round(viewportHeight * scaleY));
-      const limit = Math.max(0, minimapHeight - height);
-      const top = Math.round(Math.min(Math.max(0, (mm.scroller.scrollTop || 0) * scaleY), limit));
-      mm.slider.style.height = height + 'px';
-      mm.slider.style.top = top + 'px';
-      void contentHeight;
+      const { minimapHeight, viewportHeight, scrollHeight, thumbHeight } = mm.metrics;
+      if (minimapHeight <= 0 || thumbHeight <= 0) return;
+      const maxScroll = Math.max(1, scrollHeight - viewportHeight);
+      const ratio = Math.min(1, Math.max(0, (mm.scroller.scrollTop || 0) / maxScroll));
+      const travel = Math.max(0, minimapHeight - thumbHeight);
+      mm.slider.style.height = thumbHeight + 'px';
+      mm.slider.style.top = Math.round(ratio * travel) + 'px';
     }
 
     function mmOnScroll() {
@@ -311,14 +318,20 @@ window.__ModuleLoader__.load({
     /** Map a y coordinate inside the overlay to the conversation's scrollTop. */
     function mmScrollToPointer(y) {
       const scroller = mm.scroller;
-      if (scroller === null || mm.metrics.scaleY <= 0) return;
-      const contentY = y / mm.metrics.scaleY;
-      const limit = Math.max(0, mm.metrics.contentHeight - mm.metrics.viewportHeight);
-      scroller.scrollTop = Math.round(Math.min(Math.max(0, contentY - mm.metrics.viewportHeight / 2), limit));
+      if (scroller === null) return;
+      const { minimapHeight, viewportHeight, scrollHeight, thumbHeight } = mm.metrics;
+      if (minimapHeight <= 0 || thumbHeight <= 0) return;
+      const travel = Math.max(1, minimapHeight - thumbHeight);
+      // Centre the slider on the pointer, clamped to the track, then invert the
+      // same ratio the scroller's own scrollbar uses.
+      const ratio = Math.min(1, Math.max(0, (y - thumbHeight / 2) / travel));
+      const maxScroll = Math.max(0, scrollHeight - viewportHeight);
+      scroller.scrollTop = Math.round(ratio * maxScroll);
     }
 
     function mmPointerDown(event) {
       if (mm.scroller === null || mm.overlay === null || mm.slider === null) return;
+      if (mm.metrics.thumbHeight <= 0) return;
       if (typeof event.button === 'number' && event.button !== 0) return;
       if (typeof event.preventDefault === 'function') event.preventDefault();
       const overlayRect = mm.overlay.getBoundingClientRect();
@@ -332,10 +345,14 @@ window.__ModuleLoader__.load({
     }
 
     function mmPointerMove(event) {
-      if (mm.drag === null || mm.scroller === null || mm.metrics.scaleY <= 0) return;
-      const delta = ((event.clientY || 0) - mm.drag.startY) / mm.metrics.scaleY;
-      const limit = Math.max(0, mm.metrics.contentHeight - mm.metrics.viewportHeight);
-      mm.scroller.scrollTop = Math.round(Math.min(Math.max(0, mm.drag.startScroll + delta), limit));
+      if (mm.drag === null || mm.scroller === null) return;
+      const { minimapHeight, viewportHeight, scrollHeight, thumbHeight } = mm.metrics;
+      const travel = Math.max(1, minimapHeight - thumbHeight);
+      const maxScroll = Math.max(0, scrollHeight - viewportHeight);
+      if (maxScroll === 0) return;
+      const startRatio = Math.min(1, Math.max(0, mm.drag.startScroll / maxScroll));
+      const ratio = Math.min(1, Math.max(0, startRatio + ((event.clientY || 0) - mm.drag.startY) / travel));
+      mm.scroller.scrollTop = Math.round(ratio * maxScroll);
       mmSyncSlider();
     }
 
@@ -356,7 +373,6 @@ window.__ModuleLoader__.load({
       mmUnbind();
       mm.scroller = scroller;
       mm.anchor = anchor;
-      mm.column = null;
       const cleanups = [];
       const onScroll = () => mmOnScroll();
       scroller.addEventListener('scroll', onScroll, { passive: true });
@@ -370,7 +386,9 @@ window.__ModuleLoader__.load({
         // Trailing debounce: content only changes between generations, so a
         // streaming answer refreshes the preview once it pauses instead of
         // cloning the conversation on every token.
-        const observer = new window.MutationObserver(() => mmSchedule(MM_SYNC_DELAY_MS));
+        const observer = new window.MutationObserver(() => {
+          mmSchedule(MM_SYNC_DELAY_MS);
+        });
         observer.observe(anchor, { childList: true, subtree: true, characterData: true });
         cleanups.push(() => observer.disconnect());
       }
@@ -391,7 +409,6 @@ window.__ModuleLoader__.load({
       mm.drag = null;
       mm.scroller = null;
       mm.anchor = null;
-      mm.column = null;
       if (mm.overlay !== null) mm.overlay.removeAttribute(MM_VISIBLE);
     }
 
