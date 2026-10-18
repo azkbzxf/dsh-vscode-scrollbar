@@ -201,8 +201,8 @@ window.__ModuleLoader__.load({
      * minimap. Measure the column from the children that are narrower than the
      * pane, and fall back to the full width when nothing narrower exists.
      */
-    function mmMeasureColumn(anchor, anchorRect, anchorWidth) {
-      const anchorLeft = anchorRect.left || 0;
+    function mmMeasureColumn(anchor, originLeft, anchorWidth) {
+      const anchorLeft = originLeft || 0;
       const cached = mm.column;
       if (cached !== null && cached.anchorWidth === anchorWidth && mm.syncs % 8 !== 0) return cached;
       let left = anchorWidth;
@@ -249,7 +249,12 @@ window.__ModuleLoader__.load({
       mm.overlay.style.height = Math.round(minimapHeight) + 'px';
 
       const anchorRect = anchor.getBoundingClientRect();
-      const anchorWidth = Math.max(1, anchorRect.width || scroller.clientWidth || 1);
+      // Slot anchors render with `display: contents`: the outlet wrapper takes
+      // no layout box, so the anchor itself has no size. Fall back to the pane's
+      // content box and measure the chat column from the pane's left edge.
+      const anchorBoxWidth = anchorRect.width || 0;
+      const anchorWidth = Math.max(1, anchorBoxWidth > 1 ? anchorBoxWidth : (scroller.clientWidth || 1));
+      const anchorOriginLeft = anchorBoxWidth > 1 ? (anchorRect.left || 0) : (scrollerRect.left || 0);
       const contentHeight = Math.max(anchorRect.height || 0, scroller.scrollHeight || 0, minimapHeight);
       const wide = (scroller.clientWidth || 0) >= MM_MIN_SCROLLER_WIDTH;
       const scrollable = contentHeight > minimapHeight + 4;
@@ -260,7 +265,7 @@ window.__ModuleLoader__.load({
       }
       mm.overlay.setAttribute(MM_VISIBLE, '');
 
-      const column = mmMeasureColumn(anchor, anchorRect, anchorWidth);
+      const column = mmMeasureColumn(anchor, anchorOriginLeft, anchorWidth);
       const scaleX = width / column.width;
       // Uniform scale shows the whole conversation in VS Code's "fit" spirit;
       // when the scaled content is still taller than the minimap, squash the
@@ -271,6 +276,10 @@ window.__ModuleLoader__.load({
       const clone = anchor.cloneNode(true);
       mmSanitize(clone);
       clone.setAttribute(MM_CLONE, '');
+      // The anchor's inline `display: contents` comes along with cloneNode; give
+      // the clone a real box or the width and scale below would be inert and its
+      // children would reflow inside the 80px preview instead of shrinking.
+      clone.style.display = 'block';
       clone.style.width = Math.round(anchorWidth) + 'px';
       // Scale, then shift the measured column to x = 0. CSS applies the function
       // list right to left, so the point maps as x' = scaleX * (x - column.left).

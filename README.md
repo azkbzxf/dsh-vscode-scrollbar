@@ -104,10 +104,12 @@ bar renders correctly even before the marker is applied.
 1. A fixed-position layer is appended to `document.body` and placed from the scroll container's
    `getBoundingClientRect()`: to the left of the 14px bar (`right - scrollbarWidth - 6px - 80px`), with
    the container's top and height. It is `z-index:30`, read-only and never takes layout space.
-2. The anchor is cloned, sanitized in one tree walk, laid out at the pane width, and transformed with
-   `scale(sx, sy) translate(...)`. The horizontal scale is the preview width over the *measured chat
-   column* width — the widest direct child of the anchor that is narrower than 95% of the pane — so the
-   preview matches what the messages look like, not the empty gutter around them.
+2. The anchor is cloned, sanitized in one tree walk, and transformed with `scale(sx, sy)
+   translate(...)`. Slot anchors render with `display: contents` (the outlet wrapper takes no box), so
+   the clone is forced to `display: block`, sized from the pane's content width, and its chat column is
+   measured from the pane's left edge. The horizontal scale is the preview width over the *measured chat
+   column* width — the widest descendant that is narrower than 95% of the pane — so the preview matches
+   what the messages look like, not the empty gutter around them.
 3. The vertical scale is uniform until the scaled content is shorter than the preview; then it
    stretches to fill it.
 4. The same scale maps `scrollTop` to the slider's top/height and pointer positions back to
@@ -145,6 +147,8 @@ settings of its own.
 
 ## What's new
 
+- **1.1.1** — fixes the minimap layout: slot anchors are `display: contents`, so the preview clone now
+  gets its own box instead of reflowing inside the 80px column.
 - **1.1.0** — adds the VS Code minimap preview column next to the scrollbar.
 - **1.0.0** — VS Code-style conversation scrollbar.
 

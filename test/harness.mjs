@@ -299,7 +299,9 @@ scrollBody.overflowY = 'auto';
 place(scrollBody, { top: 40, left: 0, width: 1790, height: 1000 });
 box(scrollBody, { clientWidth: 1776, clientHeight: 1000, offsetWidth: 1790, offsetHeight: 1000, scrollHeight: 4000, scrollTop: 0 });
 const anchor = scrollBody.appendChild(new Element('div', { 'data-slot': 'conversation.session' }));
-place(anchor, { top: 40, left: 0, width: 1776, height: 3800 });
+// Slot anchors render with `display: contents` in the real client: no box, no
+// size. The minimap must measure against the pane in that case.
+place(anchor, { top: 40, left: 0, width: 0, height: 0 });
 const flow = anchor.appendChild(new Element('div'));
 place(flow, { top: 40, left: 428, width: 920, height: 3800 });
 flow.setAttribute('id', 'flow');
@@ -329,6 +331,7 @@ const clone = findAttr(CLONE);
 const slider = findAttr(SLIDER);
 assert.ok(preview && clone && slider, 'preview, clone and slider exist');
 assert.equal(preview.children.length, 1, 'preview holds exactly one clone');
+assert.equal(clone.style.display, 'block', 'clone is forced into a real box despite the display:contents anchor');
 assert.equal(clone.style.width, '1776px', 'clone is laid out at the pane width');
 assert.equal(
   clone.style.transform,
@@ -357,7 +360,7 @@ redrawnBody.overflowY = 'auto';
 place(redrawnBody, { top: 40, left: 0, width: 1600, height: 900 });
 box(redrawnBody, { clientWidth: 1586, clientHeight: 900, offsetWidth: 1600, offsetHeight: 900, scrollHeight: 5200, scrollTop: 0 });
 const redrawnAnchor = redrawnBody.appendChild(new Element('div', { 'data-slot': 'conversation.session' }));
-place(redrawnAnchor, { top: 40, left: 0, width: 1586, height: 5000 });
+place(redrawnAnchor, { top: 40, left: 0, width: 0, height: 0 });
 const redrawnFlow = redrawnAnchor.appendChild(new Element('div'));
 place(redrawnFlow, { top: 40, left: 333, width: 920, height: 5000 });
 redrawnFlow.dataset.marker = 'redrawn';
