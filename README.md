@@ -36,7 +36,7 @@ active palette exactly like VS Code does — no plugin-wide color override, no s
 | Property | Harness default | With this plugin |
 | --- | --- | --- |
 | Preview column | none | 80px column flush against the scrollbar, capped at half the window height |
-| Content | none | snapshot of the whole conversation, scaled into the column; images and video keep their space but are not painted, as in VS Code |
+| Content | none | snapshot of the whole conversation, scaled into the column; images are painted, heavyweight media (video/canvas/SVG/forms) is dropped |
 | Viewport slider | none | VS Code `minimapSlider`: square translucent band, visible only while hovering the minimap or dragging |
 | Checkpoint rail | right-aligned at the edge, hidden under the preview | parked 110px from the right edge, left of the column and fully visible |
 | Click | n/a | jumps the conversation to that point and keeps dragging from there |
@@ -135,8 +135,9 @@ bar renders correctly even before the marker is applied.
    the preview is fitted to.
 4. The clone is transformed with `scale(sx, sy) translate(-columnLeft, 0)`: `sx = 80px / columnWidth`
    and `sy = columnHeight / naturalHeight`, so the whole conversation fills the (capped) column the way
-   VS Code's minimap fits a file into its column. Media keeps its box but is hidden with
-   `visibility:hidden`, matching VS Code, which does not paint images in the minimap.
+   VS Code's minimap fits a file into its column. Images stay painted (a chat minimap with empty holes
+   where screenshots were reads as broken); stateful media (video, canvas, SVG, forms) is dropped from
+   the clone.
 5. The slider lives in the preview's own coordinate system, not the scrollbar's: its height is
    `viewportHeight * scaleY` and its top is `scrollTop * scaleY`, clamped to the track, so it always
    marks the viewport the preview is showing. The same scale inverts pointer positions: a click maps
@@ -180,10 +181,13 @@ unconditional.
 
 ## What's new
 
+- **1.2.1** — the minimap paints images again. 1.2.0 hid them to mirror VS Code, but in a chat
+  that reads as empty holes where screenshots used to be; images are painted, stateful media
+  (video/canvas/SVG/forms) is still dropped, and the half-height cap and hover slider stay.
 - **1.2.0** — the minimap now follows VS Code's own behaviour instead of only its geometry: the column
   is flush against the scrollbar and capped at half the window height (VS Code uses the full height);
   the slider is the real `minimapSlider` — square, scrollbar-slider colours, visible only on hover or
-  while dragging; images/video keep their space but are not painted; pressing anywhere in the minimap
+  while dragging; images are painted, stateful media is dropped; pressing anywhere in the minimap
   jumps and starts a drag; the wheel over the minimap scrolls the conversation. DSH's "加载更早"
   pagination is expanded automatically, so older turns are no longer folded behind it.
 - **1.1.3** — the minimap no longer hides Harness's turn-navigation rail: while the column is shown the

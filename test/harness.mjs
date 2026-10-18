@@ -407,8 +407,8 @@ assert.ok(
   'stylesheet shows the slider only while hovering or dragging, like editor.minimap.showSlider: mouseover',
 );
 assert.ok(
-  styleTags[0].textContent.includes('visibility:hidden!important'),
-  'stylesheet keeps media boxes but stops painting images, as VS Code does in the minimap',
+  !styleTags[0].textContent.includes('visibility:hidden'),
+  'images stay painted inside the preview, so chats do not show empty holes',
 );
 assert.equal(markers().length, 1, 'conversation scroller is tagged');
 assert.equal(markers()[0], scroller, 'the nearest scrollable ancestor is tagged');

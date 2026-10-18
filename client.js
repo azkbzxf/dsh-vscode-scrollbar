@@ -104,10 +104,9 @@ window.__ModuleLoader__.load({
       'html body [' + MM_PREVIEW + ']{position:absolute;inset:0;overflow:hidden;pointer-events:none}',
       'html body [' + MM_CLONE + ']{position:absolute;top:0;left:0;transform-origin:top left;pointer-events:none;user-select:none;will-change:transform}',
       'html body [' + MM_CLONE + '] *{pointer-events:none!important;animation:none!important;transition:none!important}',
-      // VS Code does not paint media inside the minimap; hide images and video
-      // but keep their boxes, or the preview would lose their height and the
-      // slider would stop matching the real scroll position.
-      'html body [' + MM_CLONE + '] img,html body [' + MM_CLONE + '] video,html body [' + MM_CLONE + '] canvas{visibility:hidden!important}',
+      // Images stay painted in the preview: an empty hole where a screenshot
+      // was would read as a broken minimap. Heavyweight stateful media (video,
+      // canvas, SVG, forms) is dropped from the clone by mmSanitize instead.
       'html body [' + MM_CLONE + ']::-webkit-scrollbar,html body [' + MM_CLONE + '] *::-webkit-scrollbar{width:0;height:0;display:none}',
       // VS Code minimapSlider: square, translucent, coloured like the scrollbar
       // slider (#64646466 light / #79797966 dark, hover #646464B3, active

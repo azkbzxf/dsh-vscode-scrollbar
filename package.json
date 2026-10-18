@@ -1,6 +1,6 @@
 {
   "name": "dsh-vscode-scrollbar",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "type": "module",
   "description": "DSH plugin: restyles the conversation scrollbar to match the Visual Studio Code editor and adds a VS Code-style minimap preview column with a hover slider.",
