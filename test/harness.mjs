@@ -7,7 +7,7 @@
  * cases that broke in the live app: the chat column measured from the live
  * `[data-chat-flow-kind]` rows (a `display: contents` anchor has no box), a
  * preview that fills the pane (images are part of a chat's height), and a
- * viewport slider that mirrors the scroller's own scrollbar ratio.
+ * viewport slider that maps scroll position through the preview's own scale.
  *
  * Run with: node test/harness.mjs client.js
  */
@@ -387,6 +387,10 @@ const styleTags = documentStub.querySelectorAll('style[data-plugin-css="dsh-vsco
 assert.equal(styleTags.length, 1, 'one stylesheet is attached');
 assert.ok(styleTags[0].textContent.includes('::-webkit-scrollbar-thumb'), 'stylesheet carries the scrollbar rules');
 assert.ok(styleTags[0].textContent.includes('14px'), 'stylesheet uses the 14px VS Code size');
+assert.ok(
+  styleTags[0].textContent.includes('nav[aria-label="Turn navigation"]'),
+  'stylesheet shifts the checkpoint rail left of the minimap while it is shown',
+);
 assert.equal(markers().length, 1, 'conversation scroller is tagged');
 assert.equal(markers()[0], scroller, 'the nearest scrollable ancestor is tagged');
 
@@ -420,15 +424,15 @@ for (const child of clone.querySelectorAll('[data-chat-flow-kind]')) {
 }
 
 const slider = sliderOf();
-assert.equal(slider.style.height, '167px', 'viewport thumb is the viewport fraction of the content');
-assert.equal(slider.style.top, '0px', 'thumb starts at the top');
+assert.equal(slider.style.height, '172px', 'viewport band is the viewport height through the preview scale');
+assert.equal(slider.style.top, '0px', 'band starts at the top');
 
 // --- 2. scrolling moves the slider only ---------------------------------------
 const cloneBeforeScroll = cloneOf();
 scroller.scrollTop = 2500;
 scroller.dispatch('scroll');
 await sleep(40);
-assert.equal(slider.style.top, '417px', 'half-way scroll puts the thumb half-way down the track');
+assert.equal(slider.style.top, '431px', 'scrolling maps scrollTop through the preview scale');
 assert.equal(cloneOf(), cloneBeforeScroll, 'scrolling does not rebuild the preview');
 
 // --- 3. clicking the track jumps to that position ------------------------------
@@ -437,15 +441,15 @@ scroller.dispatch('scroll');
 await sleep(40);
 assert.equal(slider.style.top, '0px');
 overlayNode.dispatch('mousedown', { clientY: 500, button: 0 });
-assert.equal(scroller.scrollTop, 2500, 'clicking the middle of the track centres the viewport there');
+assert.equal(scroller.scrollTop, 2400, 'clicking the track centres the viewport on that preview line');
 
 // --- 4. dragging the slider scrolls proportionally ----------------------------
 scroller.scrollTop = 0;
 scroller.dispatch('scroll');
 await sleep(40);
 overlayNode.dispatch('mousedown', { clientY: 50, button: 0 });
-fireWindow('mousemove', { clientY: 50 + 833 / 2 });
-assert.equal(scroller.scrollTop, 2500, 'dragging the thumb by half the travel scrolls half the range');
+fireWindow('mousemove', { clientY: 50 + 414 });
+assert.equal(scroller.scrollTop, 2401, 'dragging by 414 minimap px scrolls 414 / scaleY conversation px');
 fireWindow('mouseup');
 
 // --- 5. new content rebuilds the preview --------------------------------------
@@ -483,4 +487,4 @@ const remainingWindowListeners = Array.from(windowListeners.values()).reduce((to
 assert.equal(remainingWindowListeners, 0, 'window listeners removed');
 assert.equal(documentStub.body.children.length, 1, 'body keeps only the app content');
 
-console.log('dsh-vscode-scrollbar: client harness passed (scrollbar + minimap v1.1.2, column fit, slider, drag, retag, disposal)');
+console.log('dsh-vscode-scrollbar: client harness passed (scrollbar + minimap v1.1.3, column fit, preview-scaled slider, drag, retag, disposal)');

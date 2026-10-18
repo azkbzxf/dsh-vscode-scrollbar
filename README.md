@@ -37,7 +37,8 @@ active palette exactly like VS Code does — no plugin-wide color override, no s
 | --- | --- | --- |
 | Preview column | none | 80px column right of the scrollbar, 6px gap |
 | Content | none | snapshot of the whole conversation, scaled into the column |
-| Viewport slider | none | translucent block sized to the visible fraction |
+| Viewport slider | none | translucent block mapped through the preview scale |
+| Checkpoint rail | right-aligned at the edge, hidden under the preview | parked 110px from the right edge, left of the column and fully visible |
 | Click | n/a | jumps the conversation to that point |
 | Drag | n/a | scrubs the conversation |
 | Idle / hover opacity | n/a | 45% / 85% |
@@ -48,8 +49,12 @@ active palette exactly like VS Code does — no plugin-wide color override, no s
 - The minimap only appears when there is spare room. The chat column is capped at 920px, so on wide
   windows the preview sits in the empty right margin; on a narrow window it hides rather than covering
   the messages. It also stays hidden while the conversation is shorter than the viewport.
-- The slider tracks the scroll position and is sized to the visible fraction. Drag it to scrub;
-  click anywhere else in the preview to jump there.
+- The slider is a position overlay, not a scrollbar look-alike: its height is the viewport height
+  through the preview scale and its offset is `scrollTop` through the same scale, so it lands on the
+  preview line the viewport is showing. Drag it to scrub; click anywhere else in the preview to jump
+  there. It deliberately does not copy the native scrollbar thumb's size.
+- Harness's turn-navigation rail (the short checkpoint bars on the right edge) keeps its stock position
+  until the preview appears, then moves out of the column's way and stays clickable.
 - The preview refreshes after new content settles, debounced by 350 ms, so a streaming answer does not
   rebuild the clone on every token. Scrolling is rAF-throttled.
 - It is read-only: interactions pass through the preview, and the clone has its ids, images, SVG,
@@ -103,7 +108,10 @@ bar renders correctly even before the marker is applied.
 
 1. A fixed-position layer is appended to `document.body` and placed from the scroll container's
    `getBoundingClientRect()`: to the left of the 14px bar (`right - scrollbarWidth - 6px - 80px`), with
-   the container's top and height. It is `z-index:30`, read-only and never takes layout space.
+   the container's top and height. It is `z-index:30`, read-only and never takes layout space. While it
+   is shown, a stylesheet rule parks Harness's turn-navigation rail (`nav[aria-label="轮次导航"]`) at
+   `right:110px`, i.e. 14px bar + 6px gap + 80px column + 10px breathing room, so the rail's checkpoint
+   bars are no longer painted over; with the column hidden the rail returns to its stock `right:12px`.
 2. The chat column is measured on the **live** tree: every message row is a `[data-chat-flow-kind]`
    flex child of a column capped at `max-width: var(--dsh-chat-content-width)` and centred, so a
    rendered row reports the column width exactly. Measuring the clone instead would be wrong — the
@@ -117,10 +125,12 @@ bar renders correctly even before the marker is applied.
 4. The clone is transformed with `scale(sx, sy) translate(-columnLeft, 0)`: `sx = 80px / columnWidth`
    and `sy = paneHeight / naturalHeight`, so the preview always fills the pane the way VS Code's
    minimap fits a file into its column.
-5. The slider is derived from the **scroller's own numbers**, not from the scaled clone: thumb height
-   is the viewport fraction of `scrollHeight`, its position the fraction of the scrollable range. The
-   same mapping inverts pointer positions back to `scrollTop`, so click-to-jump and drags stay in step
-   with the real scrollbar.
+5. The slider lives in the preview's own coordinate system, not the scrollbar's: its height is
+   `viewportHeight * scaleY` and its top is `scrollTop * scaleY`, clamped to the track, so it always
+   marks the viewport the preview is showing. The same scale inverts pointer positions: a click maps
+   `y / scaleY - viewportHeight / 2` back to `scrollTop`, and a drag adds `deltaY / scaleY`. Keeping the
+   mapping in preview coordinates means the slider stays aligned while the clone is still growing and
+   never has to imitate the native thumb's size.
 6. A `MutationObserver` on the anchor rebuilds the clone (trailing 350 ms debounce), a
    `ResizeObserver` plus a window resize listener re-measure the column and pane, and scroll events
    schedule a rAF-throttled slider update.
@@ -154,6 +164,10 @@ settings of its own.
 
 ## What's new
 
+- **1.1.3** — the minimap no longer hides Harness's turn-navigation rail: while the column is shown the
+  rail is parked 110px from the right edge, clear of the preview and still clickable. The slider is now
+  a pure position overlay — height `viewportHeight * scaleY`, offset `scrollTop * scaleY` — so it marks
+  the preview line being viewed instead of imitating the native scrollbar thumb's size.
 - **1.1.2** — fixes the minimap against the real conversation: the chat column is measured from the
   live `[data-chat-flow-kind]` rows (a detached clone reflows to the full pane), images stay in the
   preview so its height matches the conversation, the preview is fitted to the pane, and the slider
@@ -186,7 +200,7 @@ node test/harness.mjs client.js
 It stubs the DOM, layout rectangles and the observers, and asserts: the stylesheet is attached once;
 the nearest scrollable ancestor of a conversation anchor is tagged while a non-scrollable wrapper is
 left alone; the minimap measures the chat column from the live message rows, reproduces it on the
-clone, fills the pane, and derives the slider from the scroll container's ratio; scrolling moves only
+clone, fills the pane, and maps the slider through the preview scale; scrolling moves only
 the slider; a click maps back to `scrollTop`; dragging the thumb scrolls proportionally; the preview
 hides on a narrow pane and returns when widened; conversation mutations rebuild the clone; and
 disposal removes the sheet, markers, layer, observers and listeners.

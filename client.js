@@ -42,6 +42,15 @@ window.__ModuleLoader__.load({
     const MM_MIN_SCROLLER_WIDTH = 1180;
     const MM_SYNC_DELAY_MS = 350;
     const MM_RESIZE_DELAY_MS = 80;
+    // DSH renders its own "checkpoint rail" (the turn navigator: one 20x2px bar
+    // per turn, `nav[aria-label]`) 12px from the right edge, so the preview
+    // column would sit on top of it. Shift it into the free margin to the left
+    // of the minimap: 14px scrollbar + MM_GAP + MM_WIDTH + 10px breathing room.
+    const MM_RAIL_OFFSET = 110;
+    const MM_RAIL_SELECTORS = [
+      'nav[aria-label="' + '轮次导航' + '"]',
+      'nav[aria-label="Turn navigation"]',
+    ];
     const MM_FLOW_PROBE = '[data-chat-flow-kind]';
     // Rows that are outside the conversation's rendering window are hidden and
     // measure 0, so walk far enough to reach a rendered one.
@@ -88,6 +97,10 @@ window.__ModuleLoader__.load({
       'html body[data-ds-dark-theme] [' + MM_SLIDER + ']{background:rgba(191,191,191,.14)}',
       'html body [' + MM + ']:hover [' + MM_SLIDER + ']{background:rgba(121,121,121,.3)}',
       'html body[data-ds-dark-theme] [' + MM + ']:hover [' + MM_SLIDER + ']{background:rgba(191,191,191,.26)}',
+      // DSH's checkpoint rail (turn navigator) lives 12px from the right edge and
+      // would be hidden underneath the preview column; while a minimap is shown,
+      // park it in the free margin just left of the minimap instead.
+      'html body:has([' + MM + '][' + MM_VISIBLE + ']) ' + MM_RAIL_SELECTORS.join(',html body:has([' + MM + '][' + MM_VISIBLE + ']) ') + '{right:' + MM_RAIL_OFFSET + 'px}',
     ].join('\n');
 
     const scheduleFrame = typeof window.requestAnimationFrame === 'function'
@@ -284,10 +297,12 @@ window.__ModuleLoader__.load({
       clone.style.transform =
         'scale(' + scaleX.toFixed(5) + ',' + scaleY.toFixed(5) + ') translate(' + (-column.left).toFixed(2) + 'px,0px)';
 
-      // The slider mirrors the scroller's own scrollbar: thumb = viewport
-      // fraction of the content, position = fraction of the scrollable range.
-      // Deriving it from the fitted clone would desynchronise it from the pane.
-      const thumbHeight = Math.max(8, Math.round(minimapHeight * viewportHeight / scrollHeight));
+      // The slider is a position-only overlay: it lives in the preview's own
+      // coordinate system (scaleY maps conversation pixels to minimap pixels),
+      // so its band frames exactly the slice of the preview the viewport shows.
+      // Sizing it like the native scrollbar thumb instead makes it drift, since
+      // the fitted clone and the scroller's scroll range rarely share a height.
+      const thumbHeight = Math.min(minimapHeight, Math.max(8, Math.round(viewportHeight * scaleY)));
       mm.metrics = {
         minimapHeight, viewportHeight, scrollHeight, scaleX, scaleY, thumbHeight,
         naturalHeight, columnWidth: column.width, columnLeft: column.left,
@@ -295,16 +310,15 @@ window.__ModuleLoader__.load({
       mmSyncSlider();
     }
 
-    /** Position the viewport slider with the scroller's own scrollbar ratio. */
+    /** Frame the viewport inside the preview: content y * scaleY. */
     function mmSyncSlider() {
       if (mm.scroller === null || mm.slider === null) return;
-      const { minimapHeight, viewportHeight, scrollHeight, thumbHeight } = mm.metrics;
-      if (minimapHeight <= 0 || thumbHeight <= 0) return;
-      const maxScroll = Math.max(1, scrollHeight - viewportHeight);
-      const ratio = Math.min(1, Math.max(0, (mm.scroller.scrollTop || 0) / maxScroll));
+      const { minimapHeight, scaleY, thumbHeight } = mm.metrics;
+      if (minimapHeight <= 0 || scaleY <= 0 || thumbHeight <= 0) return;
       const travel = Math.max(0, minimapHeight - thumbHeight);
+      const top = Math.min(travel, Math.max(0, Math.round((mm.scroller.scrollTop || 0) * scaleY)));
       mm.slider.style.height = thumbHeight + 'px';
-      mm.slider.style.top = Math.round(ratio * travel) + 'px';
+      mm.slider.style.top = top + 'px';
     }
 
     function mmOnScroll() {
@@ -319,14 +333,13 @@ window.__ModuleLoader__.load({
     function mmScrollToPointer(y) {
       const scroller = mm.scroller;
       if (scroller === null) return;
-      const { minimapHeight, viewportHeight, scrollHeight, thumbHeight } = mm.metrics;
-      if (minimapHeight <= 0 || thumbHeight <= 0) return;
-      const travel = Math.max(1, minimapHeight - thumbHeight);
-      // Centre the slider on the pointer, clamped to the track, then invert the
-      // same ratio the scroller's own scrollbar uses.
-      const ratio = Math.min(1, Math.max(0, (y - thumbHeight / 2) / travel));
+      const { scaleY, viewportHeight, scrollHeight } = mm.metrics;
+      if (scaleY <= 0) return;
       const maxScroll = Math.max(0, scrollHeight - viewportHeight);
-      scroller.scrollTop = Math.round(ratio * maxScroll);
+      // Undo the preview transform: y in the minimap is scrollTop * scaleY, so
+      // the pointer's content coordinate is y / scaleY; centre the viewport on it.
+      const contentY = y / scaleY;
+      scroller.scrollTop = Math.min(maxScroll, Math.max(0, Math.round(contentY - viewportHeight / 2)));
     }
 
     function mmPointerDown(event) {
@@ -346,13 +359,14 @@ window.__ModuleLoader__.load({
 
     function mmPointerMove(event) {
       if (mm.drag === null || mm.scroller === null) return;
-      const { minimapHeight, viewportHeight, scrollHeight, thumbHeight } = mm.metrics;
-      const travel = Math.max(1, minimapHeight - thumbHeight);
+      const { scaleY, viewportHeight, scrollHeight } = mm.metrics;
+      if (scaleY <= 0) return;
       const maxScroll = Math.max(0, scrollHeight - viewportHeight);
       if (maxScroll === 0) return;
-      const startRatio = Math.min(1, Math.max(0, mm.drag.startScroll / maxScroll));
-      const ratio = Math.min(1, Math.max(0, startRatio + ((event.clientY || 0) - mm.drag.startY) / travel));
-      mm.scroller.scrollTop = Math.round(ratio * maxScroll);
+      // Drag in minimap pixels, convert through the preview scale: one preview
+      // pixel is 1 / scaleY conversation pixels.
+      const delta = (event.clientY || 0) - mm.drag.startY;
+      mm.scroller.scrollTop = Math.min(maxScroll, Math.max(0, Math.round(mm.drag.startScroll + delta / scaleY)));
       mmSyncSlider();
     }
 
