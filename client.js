@@ -34,8 +34,14 @@ window.__ModuleLoader__.load({
     const MM_CLONE = 'data-dsh-vscode-minimap-clone';
     const MM_SLIDER = 'data-dsh-vscode-minimap-slider';
     const MM_VISIBLE = 'data-visible';
+    const MM_DRAGGING = 'data-dragging';
     const MM_WIDTH = 80;
-    const MM_GAP = 6;
+    // VS Code's minimap is flush against the scrollbar: no gutter in between.
+    const MM_GAP = 0;
+    // The column is capped at half the window height (VS Code itself uses the
+    // full editor height); the preview still maps scrollTop 1:1 through the
+    // vertical scale, so the slider stays proportional.
+    const MM_MAX_HEIGHT_RATIO = 0.5;
     // A chat column is capped at 920px and centred, so the minimap only appears
     // when the surrounding pane is wide enough to hold it in the empty margin.
     // On narrower windows it hides instead of covering message text.
@@ -65,6 +71,13 @@ window.__ModuleLoader__.load({
       'input', 'object', 'option', 'select', 'svg', 'textarea', 'video',
     ]);
 
+    // DSH's "load earlier" pagination button (chat.loadOlder / loading locales).
+    const OLDER_LABELS = new Set(['加载更早', 'Load earlier']);
+    const OLDER_PENDING_PREFIXES = ['加载中', 'Loading'];
+    const OLDER_CLICK_DELAY_MS = 350;
+    const OLDER_MAX_DELAY_MS = 4000;
+    const OLDER_MAX_CLICKS = 500;
+
     // The marker is the primary hook; the `:has()` branch additionally lets the
     // sheet work on a container whose anchor is its direct child even when the
     // marker has not been applied yet (or a future shell drops the attribute).
@@ -86,17 +99,26 @@ window.__ModuleLoader__.load({
       'html body ' + target + '::-webkit-scrollbar-thumb:hover{background-color:var(--dsh-vscode-scrollbar-thumb-hover)}',
       'html body ' + target + '::-webkit-scrollbar-thumb:active{background-color:var(--dsh-vscode-scrollbar-thumb-active)}',
       'html body ' + target + '::-webkit-scrollbar-corner{background:transparent}',
-      'html body [' + MM + ']{position:fixed;z-index:30;display:none;overflow:hidden;pointer-events:auto;background:transparent}',
+      'html body [' + MM + ']{position:fixed;z-index:30;display:none;overflow:hidden;pointer-events:auto;background:transparent;cursor:default}',
       'html body [' + MM + '][' + MM_VISIBLE + ']{display:block}',
-      'html body [' + MM_PREVIEW + ']{position:absolute;inset:0;overflow:hidden;opacity:.45;pointer-events:none;transition:opacity .16s ease}',
-      'html body [' + MM + ']:hover [' + MM_PREVIEW + ']{opacity:.85}',
+      'html body [' + MM_PREVIEW + ']{position:absolute;inset:0;overflow:hidden;pointer-events:none}',
       'html body [' + MM_CLONE + ']{position:absolute;top:0;left:0;transform-origin:top left;pointer-events:none;user-select:none;will-change:transform}',
       'html body [' + MM_CLONE + '] *{pointer-events:none!important;animation:none!important;transition:none!important}',
+      // VS Code does not paint media inside the minimap; hide images and video
+      // but keep their boxes, or the preview would lose their height and the
+      // slider would stop matching the real scroll position.
+      'html body [' + MM_CLONE + '] img,html body [' + MM_CLONE + '] video,html body [' + MM_CLONE + '] canvas{visibility:hidden!important}',
       'html body [' + MM_CLONE + ']::-webkit-scrollbar,html body [' + MM_CLONE + '] *::-webkit-scrollbar{width:0;height:0;display:none}',
-      'html body [' + MM_SLIDER + ']{position:absolute;left:0;right:0;top:0;height:0;pointer-events:none;background:rgba(121,121,121,.16)}',
-      'html body[data-ds-dark-theme] [' + MM_SLIDER + ']{background:rgba(191,191,191,.14)}',
-      'html body [' + MM + ']:hover [' + MM_SLIDER + ']{background:rgba(121,121,121,.3)}',
-      'html body[data-ds-dark-theme] [' + MM + ']:hover [' + MM_SLIDER + ']{background:rgba(191,191,191,.26)}',
+      // VS Code minimapSlider: square, translucent, coloured like the scrollbar
+      // slider (#64646466 light / #79797966 dark, hover #646464B3, active
+      // #BFBFBF66), and only visible on hover or while dragging
+      // (editor.minimap.showSlider defaults to "mouseover").
+      'html body [' + MM_SLIDER + ']{position:absolute;left:0;right:0;top:0;height:0;pointer-events:none;opacity:0;transition:opacity .1s ease-out;background:rgba(100,100,100,.4)}',
+      'html body[data-ds-dark-theme] [' + MM_SLIDER + ']{background:rgba(121,121,121,.4)}',
+      'html body [' + MM + ']:hover [' + MM_SLIDER + '],html body [' + MM + '][' + MM_DRAGGING + '] [' + MM_SLIDER + ']{opacity:1}',
+      'html body [' + MM + ']:hover [' + MM_SLIDER + ']{background:rgba(100,100,100,.7)}',
+      'html body[data-ds-dark-theme] [' + MM + ']:hover [' + MM_SLIDER + ']{background:rgba(100,100,100,.7)}',
+      'html body [' + MM + '][' + MM_DRAGGING + '] [' + MM_SLIDER + ']{background:rgba(191,191,191,.2)}',
       // DSH's checkpoint rail (turn navigator) lives 12px from the right edge and
       // would be hidden underneath the preview column; while a minimap is shown,
       // park it in the free margin just left of the minimap instead.
@@ -176,6 +198,7 @@ window.__ModuleLoader__.load({
       mm.preview = preview;
       mm.slider = slider;
       overlay.addEventListener('mousedown', mmPointerDown);
+      overlay.addEventListener('wheel', mmWheel, { passive: false });
 
       const onMove = (event) => mmPointerMove(event);
       const onUp = () => mmPointerUp();
@@ -186,6 +209,8 @@ window.__ModuleLoader__.load({
         window.addEventListener('resize', onResize);
       }
       mm.globalCleanups.push(() => {
+        overlay.removeEventListener('mousedown', mmPointerDown);
+        overlay.removeEventListener('wheel', mmWheel);
         if (typeof window.removeEventListener === 'function') {
           window.removeEventListener('mousemove', onMove);
           window.removeEventListener('mouseup', onUp);
@@ -246,7 +271,9 @@ window.__ModuleLoader__.load({
 
       const scrollerRect = scroller.getBoundingClientRect();
       const scrollbarWidth = Math.max(0, (scroller.offsetWidth || 0) - (scroller.clientWidth || 0));
-      const minimapHeight = Math.max(1, scroller.clientHeight || 0);
+      const viewportHeight = Math.max(1, scroller.clientHeight || 0);
+      const windowHeight = Math.max(1, window.innerHeight || viewportHeight);
+      const minimapHeight = Math.min(viewportHeight, Math.max(120, Math.round(windowHeight * MM_MAX_HEIGHT_RATIO)));
       const width = Math.min(MM_WIDTH, Math.max(0, (scroller.clientWidth || 0) - MM_GAP * 2));
       mm.overlay.style.left = Math.round((scrollerRect.right || 0) - scrollbarWidth - MM_GAP - width) + 'px';
       mm.overlay.style.top = Math.round(scrollerRect.top || 0) + 'px';
@@ -260,7 +287,6 @@ window.__ModuleLoader__.load({
       const anchorBoxWidth = anchorRect.width || 0;
       const anchorWidth = Math.max(1, anchorBoxWidth > 1 ? anchorBoxWidth : (scroller.clientWidth || 1));
       const scrollHeight = Math.max(1, scroller.scrollHeight || 0);
-      const viewportHeight = minimapHeight;
       const wide = (scroller.clientWidth || 0) >= MM_MIN_SCROLLER_WIDTH;
       const scrollable = scrollHeight > viewportHeight + 4;
       if (!wide || !scrollable || width < 32) {
@@ -342,6 +368,17 @@ window.__ModuleLoader__.load({
       scroller.scrollTop = Math.min(maxScroll, Math.max(0, Math.round(contentY - viewportHeight / 2)));
     }
 
+    /** VS Code forwards wheel deltas over the minimap to the editor. */
+    function mmWheel(event) {
+      const scroller = mm.scroller;
+      if (scroller === null) return;
+      const delta = typeof event.deltaY === 'number' ? event.deltaY : 0;
+      if (delta === 0) return;
+      if (typeof event.preventDefault === 'function') event.preventDefault();
+      scroller.scrollTop += delta;
+      mmOnScroll();
+    }
+
     function mmPointerDown(event) {
       if (mm.scroller === null || mm.overlay === null || mm.slider === null) return;
       if (mm.metrics.thumbHeight <= 0) return;
@@ -349,11 +386,15 @@ window.__ModuleLoader__.load({
       if (typeof event.preventDefault === 'function') event.preventDefault();
       const overlayRect = mm.overlay.getBoundingClientRect();
       const y = (event.clientY || 0) - (overlayRect.top || 0);
+      // Pressing anywhere in the minimap grabs the viewport like VS Code does:
+      // a press outside the slider first centres the viewport on that line, then
+      // the same gesture keeps dragging from there.
       const sliderTop = parseFloat(mm.slider.style.top) || 0;
       const sliderHeight = parseFloat(mm.slider.style.height) || 0;
       const onSlider = y >= sliderTop && y <= sliderTop + sliderHeight;
-      mm.drag = onSlider ? { startY: event.clientY || 0, startScroll: mm.scroller.scrollTop || 0 } : null;
       if (!onSlider) mmScrollToPointer(y);
+      mm.drag = { startY: event.clientY || 0, startScroll: mm.scroller.scrollTop || 0 };
+      mm.overlay.setAttribute(MM_DRAGGING, '');
       mmSyncSlider();
     }
 
@@ -372,6 +413,7 @@ window.__ModuleLoader__.load({
 
     function mmPointerUp() {
       mm.drag = null;
+      if (mm.overlay !== null) mm.overlay.removeAttribute(MM_DRAGGING);
     }
 
     function mmSchedule(delay) {
@@ -423,7 +465,10 @@ window.__ModuleLoader__.load({
       mm.drag = null;
       mm.scroller = null;
       mm.anchor = null;
-      if (mm.overlay !== null) mm.overlay.removeAttribute(MM_VISIBLE);
+      if (mm.overlay !== null) {
+        mm.overlay.removeAttribute(MM_VISIBLE);
+        mm.overlay.removeAttribute(MM_DRAGGING);
+      }
     }
 
     function mmDispose() {
@@ -433,6 +478,79 @@ window.__ModuleLoader__.load({
       mm.overlay = null;
       mm.preview = null;
       mm.slider = null;
+    }
+
+    // ----------------------------------------------------------- older pages --
+    //
+    // DSH paginates the beginning of a conversation behind a "加载更早" button.
+    // Keeping the whole history expanded is an explicit user request, so the
+    // button is clicked as soon as it renders; each click is paced because the
+    // button turns into a disabled "加载中" while React fetches the next page.
+
+    const older = { timer: 0, clicks: 0, delay: 0 };
+
+    function olderLabel(button) {
+      const text = typeof button.textContent === 'string' ? button.textContent : '';
+      return text.replace(/\s+/g, ' ').trim();
+    }
+
+    /** Read one pass over the conversation anchors: {ready, pending}. */
+    function probeOlderPages() {
+      let ready = null;
+      let pending = false;
+      for (const anchor of document.querySelectorAll(HOST_SELECTOR)) {
+        for (const button of anchor.querySelectorAll('button')) {
+          const label = olderLabel(button);
+          if (OLDER_LABELS.has(label)) {
+            if (button.disabled === true) {
+              pending = true;
+              continue;
+            }
+            ready = button;
+            break;
+          }
+          for (const prefix of OLDER_PENDING_PREFIXES) {
+            if (label.indexOf(prefix) === 0) {
+              pending = true;
+              break;
+            }
+          }
+        }
+        if (ready !== null) break;
+      }
+      return { ready, pending };
+    }
+
+    function expandOlderPages() {
+      older.timer = 0;
+      if (older.clicks >= OLDER_MAX_CLICKS) return;
+      const { ready, pending } = probeOlderPages();
+      if (ready !== null) {
+        older.clicks += 1;
+        older.delay = OLDER_CLICK_DELAY_MS;
+        ready.click();
+        scheduleOlderPages(OLDER_CLICK_DELAY_MS);
+        return;
+      }
+      if (pending) {
+        older.delay = Math.min(OLDER_MAX_DELAY_MS, Math.max(OLDER_CLICK_DELAY_MS, older.delay * 2));
+        scheduleOlderPages(older.delay);
+        return;
+      }
+      older.clicks = 0;
+      older.delay = OLDER_CLICK_DELAY_MS;
+    }
+
+    function scheduleOlderPages(delay) {
+      if (older.timer !== 0) return;
+      older.timer = window.setTimeout(expandOlderPages, delay);
+    }
+
+    function cancelOlderPages() {
+      if (older.timer !== 0) {
+        window.clearTimeout(older.timer);
+        older.timer = 0;
+      }
     }
 
     // ------------------------------------------------------------------ scan --
@@ -456,7 +574,11 @@ window.__ModuleLoader__.load({
         }
       }
       if (primary === null) mmUnbind();
-      else mmBind(primary.scroller, primary.anchor);
+      else {
+        // A different conversation means its own pagination budget starts over.
+        if (primary.scroller !== mm.scroller) older.clicks = 0;
+        mmBind(primary.scroller, primary.anchor);
+      }
       return count;
     }
 
@@ -466,7 +588,9 @@ window.__ModuleLoader__.load({
      */
     function activate() {
       const tag = attachStyles();
+      older.delay = OLDER_CLICK_DELAY_MS;
       scanConversations();
+      scheduleOlderPages(OLDER_CLICK_DELAY_MS);
 
       // Rows stream in token by token, sessions switch, split views open: a
       // mutation burst re-scans at most once per SCAN_DELAY_MS, which keeps the
@@ -475,6 +599,9 @@ window.__ModuleLoader__.load({
       const scan = () => {
         timer = 0;
         scanConversations();
+        // The pagination button appears after a page settles, so re-check it on
+        // every coalesced mutation pass as well.
+        scheduleOlderPages(OLDER_CLICK_DELAY_MS);
       };
       const scheduleScan = () => {
         if (timer !== 0) return;
@@ -491,6 +618,7 @@ window.__ModuleLoader__.load({
           window.clearTimeout(timer);
           timer = 0;
         }
+        cancelOlderPages();
         mmDispose();
         for (const marked of document.querySelectorAll('[' + MARKER + ']')) marked.removeAttribute(MARKER);
         if (tag !== null) tag.remove();

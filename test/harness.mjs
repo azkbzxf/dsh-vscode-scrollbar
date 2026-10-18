@@ -6,8 +6,10 @@
  * listeners, layout boxes and observers. It then drives the plugin through the
  * cases that broke in the live app: the chat column measured from the live
  * `[data-chat-flow-kind]` rows (a `display: contents` anchor has no box), a
- * preview that fills the pane (images are part of a chat's height), and a
- * viewport slider that maps scroll position through the preview's own scale.
+ * preview that fills the pane (images are part of a chat's height), a
+ * viewport slider that maps scroll position through the preview's own scale,
+ * VS Code's half-window minimap cap, wheel/drag navigation, and the automatic
+ * expansion of DSH's "加载更早" pagination.
  *
  * Run with: node test/harness.mjs client.js
  */
@@ -23,20 +25,22 @@ const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 const SCAN_WAIT = 200;
 const SYNC_WAIT = 420;
 const RESIZE_WAIT = 160;
+const OLDER_WAIT = 900;
 
 const kebab = (value) => value.replace(/[A-Z]/g, (letter) => '-' + letter.toLowerCase());
 const camel = (value) => value.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 
-/** Supported selectors: `tag[attr="value"]`, `[attr="value"]`, `[attr]`. */
+/** Supported selectors: `tag`, `tag[attr="value"]`, `[attr="value"]`, `[attr]`. */
 function parseSelector(selector) {
-  const match = /^([a-zA-Z0-9]*)\[([a-zA-Z-]+)(?:="([^"]*)")?\]$/.exec(selector);
+  const match = /^([a-zA-Z0-9]*)(?:\[([a-zA-Z-]+)(?:="([^"]*)")?\])?$/.exec(selector);
   if (match === null) throw new Error('harness: unsupported selector ' + selector);
-  return { tag: match[1].toLowerCase(), name: match[2], value: match[3] };
+  return { tag: (match[1] || '').toLowerCase(), name: match[2], value: match[3] };
 }
 
 function matches(element, selector) {
   const { tag, name, value } = parseSelector(selector);
   if (tag !== '' && element.tagName !== tag) return false;
+  if (name === undefined) return true;
   const actual = element.getAttribute(name);
   if (value === undefined) return actual !== null;
   return actual === value;
@@ -172,6 +176,10 @@ class FakeElement {
     for (const handler of Array.from(this.listeners.get(type) ?? [])) handler(event);
   }
 
+  click() {
+    this.dispatch('click', {});
+  }
+
   getBoundingClientRect() {
     return { ...this.rect };
   }
@@ -282,6 +290,9 @@ const windowStub = {
       windowStub.module = module;
     },
   },
+  // Deliberately taller than the pane so the half-window cap is inactive in the
+  // default scene; the cap itself is exercised in its own phase below.
+  innerHeight: 2200,
   setTimeout,
   clearTimeout,
   addEventListener(type, handler) {
@@ -391,13 +402,21 @@ assert.ok(
   styleTags[0].textContent.includes('nav[aria-label="Turn navigation"]'),
   'stylesheet shifts the checkpoint rail left of the minimap while it is shown',
 );
+assert.ok(
+  styleTags[0].textContent.includes('data-dragging'),
+  'stylesheet shows the slider only while hovering or dragging, like editor.minimap.showSlider: mouseover',
+);
+assert.ok(
+  styleTags[0].textContent.includes('visibility:hidden!important'),
+  'stylesheet keeps media boxes but stops painting images, as VS Code does in the minimap',
+);
 assert.equal(markers().length, 1, 'conversation scroller is tagged');
 assert.equal(markers()[0], scroller, 'the nearest scrollable ancestor is tagged');
 
 const overlayNode = overlay();
 assert.ok(overlayNode !== null, 'minimap overlay exists');
 assert.notEqual(overlayNode.getAttribute('data-visible'), null, 'minimap is visible at 1776px');
-assert.equal(overlayNode.style.left, '1970px', 'overlay sits flush against the scrollbar (right - 14 - 6 - 80)');
+assert.equal(overlayNode.style.left, '1976px', 'overlay sits flush against the scrollbar (right - 14 - 80)');
 assert.equal(overlayNode.style.top, '40px', 'overlay starts at the scroller top');
 assert.equal(overlayNode.style.width, '80px', 'overlay uses the VS Code minimap width');
 assert.equal(overlayNode.style.height, '1000px', 'overlay matches the viewport height');
@@ -442,17 +461,45 @@ await sleep(40);
 assert.equal(slider.style.top, '0px');
 overlayNode.dispatch('mousedown', { clientY: 500, button: 0 });
 assert.equal(scroller.scrollTop, 2400, 'clicking the track centres the viewport on that preview line');
+assert.notEqual(overlayNode.getAttribute('data-dragging'), null, 'pressing the minimap grabs the viewport');
+fireWindow('mouseup');
+assert.equal(overlayNode.getAttribute('data-dragging'), null, 'releasing clears the dragging state');
 
 // --- 4. dragging the slider scrolls proportionally ----------------------------
 scroller.scrollTop = 0;
 scroller.dispatch('scroll');
 await sleep(40);
 overlayNode.dispatch('mousedown', { clientY: 50, button: 0 });
+assert.notEqual(overlayNode.getAttribute('data-dragging'), null, 'dragging shows the slider band');
 fireWindow('mousemove', { clientY: 50 + 414 });
 assert.equal(scroller.scrollTop, 2401, 'dragging by 414 minimap px scrolls 414 / scaleY conversation px');
 fireWindow('mouseup');
 
-// --- 5. new content rebuilds the preview --------------------------------------
+// --- 5. the wheel over the minimap scrolls the conversation --------------------
+scroller.scrollTop = 0;
+scroller.dispatch('scroll');
+await sleep(40);
+overlayNode.dispatch('wheel', { deltaY: 300 });
+assert.equal(scroller.scrollTop, 300, 'wheel deltas over the minimap are forwarded to the scroller');
+scroller.scrollTop = 0;
+scroller.dispatch('scroll');
+await sleep(40);
+
+// --- 6. the column is capped at half the window, like a VS Code minimap -------
+windowStub.innerHeight = 1200;
+fireWindow('resize');
+await sleep(RESIZE_WAIT);
+assert.equal(overlayNode.style.height, '600px', 'minimap height is capped at half the window');
+assert.equal(cloneOf().style.transform, 'scale(0.08696,0.10345) translate(-428.00px,0px)', 'the preview keeps filling the capped column');
+assert.equal(sliderOf().style.height, '103px', 'the slider follows the capped scale');
+assert.equal(sliderOf().style.top, '0px');
+
+windowStub.innerHeight = 2200;
+fireWindow('resize');
+await sleep(RESIZE_WAIT);
+assert.equal(overlayNode.style.height, '1000px', 'a taller window restores the full-height column');
+
+// --- 7. new content rebuilds the preview --------------------------------------
 const staleClone = cloneOf();
 const extraRow = new FakeElement('div');
 extraRow.setAttribute('data-chat-flow-kind', 'assistant-step');
@@ -463,7 +510,31 @@ await sleep(SYNC_WAIT);
 assert.ok(cloneOf() !== staleClone, 'a conversation mutation rebuilds the clone after the debounce');
 assert.equal(cloneOf().querySelectorAll('[data-chat-flow-kind]').length, 4, 'the clone contains the new row');
 
-// --- 6. narrow panes hide the minimap instead of covering text ----------------
+// --- 8. DSH's "加载更早" pagination is expanded automatically ------------------
+const olderButton = new FakeElement('button');
+olderButton.textContent = '加载更早';
+let olderClicks = 0;
+olderButton.addEventListener('click', () => {
+  olderClicks += 1;
+  // The real button becomes a disabled "加载中" while React fetches a page.
+  olderButton.textContent = '加载中';
+  olderButton.disabled = true;
+});
+anchor.appendChild(olderButton);
+fireMutations(anchor);
+await sleep(OLDER_WAIT);
+assert.equal(olderClicks, 1, 'the "load earlier" button is clicked as soon as it renders');
+olderButton.textContent = '加载更早';
+olderButton.disabled = false;
+fireMutations(anchor);
+await sleep(OLDER_WAIT);
+assert.equal(olderClicks, 2, 'the next page is expanded once the button is ready again');
+olderButton.remove();
+fireMutations(anchor);
+await sleep(OLDER_WAIT);
+assert.equal(olderClicks, 2, 'no phantom clicks after the pagination button disappears');
+
+// --- 9. narrow panes hide the minimap instead of covering text ----------------
 scroller.clientWidth = 900;
 scroller.offsetWidth = 914;
 fireResize();
@@ -476,7 +547,7 @@ fireResize();
 await sleep(RESIZE_WAIT);
 assert.notEqual(overlayNode.getAttribute('data-visible'), null, 'minimap comes back with the pane');
 
-// --- 7. disposal restores the stock UI ----------------------------------------
+// --- 10. disposal restores the stock UI ---------------------------------------
 dispose();
 assert.equal(documentStub.querySelectorAll('style[data-plugin-css="dsh-vscode-scrollbar/VscodeScrollbar.css"]').length, 0, 'stylesheet removed');
 assert.equal(markers().length, 0, 'tags removed');
@@ -487,4 +558,4 @@ const remainingWindowListeners = Array.from(windowListeners.values()).reduce((to
 assert.equal(remainingWindowListeners, 0, 'window listeners removed');
 assert.equal(documentStub.body.children.length, 1, 'body keeps only the app content');
 
-console.log('dsh-vscode-scrollbar: client harness passed (scrollbar + minimap v1.1.3, column fit, preview-scaled slider, drag, retag, disposal)');
+console.log('dsh-vscode-scrollbar: client harness passed (scrollbar + minimap v1.2.0, half-height cap, hover slider, wheel/drag, auto expand, retag, disposal)');

@@ -35,13 +35,13 @@ active palette exactly like VS Code does — no plugin-wide color override, no s
 
 | Property | Harness default | With this plugin |
 | --- | --- | --- |
-| Preview column | none | 80px column right of the scrollbar, 6px gap |
-| Content | none | snapshot of the whole conversation, scaled into the column |
-| Viewport slider | none | translucent block mapped through the preview scale |
+| Preview column | none | 80px column flush against the scrollbar, capped at half the window height |
+| Content | none | snapshot of the whole conversation, scaled into the column; images and video keep their space but are not painted, as in VS Code |
+| Viewport slider | none | VS Code `minimapSlider`: square translucent band, visible only while hovering the minimap or dragging |
 | Checkpoint rail | right-aligned at the edge, hidden under the preview | parked 110px from the right edge, left of the column and fully visible |
-| Click | n/a | jumps the conversation to that point |
-| Drag | n/a | scrubs the conversation |
-| Idle / hover opacity | n/a | 45% / 85% |
+| Click | n/a | jumps the conversation to that point and keeps dragging from there |
+| Drag / wheel | n/a | drag scrubs the conversation, the wheel scrolls it |
+| "加载更早" pages | collapsed behind a button | expanded automatically, so older turns are never folded away |
 | Minimum pane width | n/a | 1180px — below that the column hides instead of covering text |
 
 ## Behaviour
@@ -49,17 +49,27 @@ active palette exactly like VS Code does — no plugin-wide color override, no s
 - The minimap only appears when there is spare room. The chat column is capped at 920px, so on wide
   windows the preview sits in the empty right margin; on a narrow window it hides rather than covering
   the messages. It also stays hidden while the conversation is shorter than the viewport.
-- The slider is a position overlay, not a scrollbar look-alike: its height is the viewport height
-  through the preview scale and its offset is `scrollTop` through the same scale, so it lands on the
-  preview line the viewport is showing. Drag it to scrub; click anywhere else in the preview to jump
-  there. It deliberately does not copy the native scrollbar thumb's size.
+- The column is flush against the scrollbar and capped at half the window height. Inside that column
+  the whole conversation is mapped 1:1 through the preview scale, so the slider marks the exact
+  preview slice the viewport is showing. (VS Code itself uses the full editor height; the cap is this
+  plugin's only deliberate deviation from it.)
+- The slider is VS Code's `minimapSlider`: a square translucent band in the scrollbar-slider colors
+  that only appears while the pointer is over the minimap or while dragging (`showSlider: mouseover`).
+  Its size and offset come from the conversation's own numbers (`viewportHeight * scaleY`,
+  `scrollTop * scaleY`), never from the native scrollbar thumb.
+- Clicking anywhere in the minimap centres the viewport on that line and then keeps the same gesture
+  as a drag, so press-and-drag scrubs continuously. The wheel over the minimap scrolls the
+  conversation, as it does over VS Code's minimap.
 - Harness's turn-navigation rail (the short checkpoint bars on the right edge) keeps its stock position
   until the preview appears, then moves out of the column's way and stays clickable.
+- Harness paginates old turns behind a "加载更早" / "Load earlier" button. The plugin clicks it as soon
+  as it renders (paced while the button is in its disabled "加载中" state, capped at 500 pages), so the
+  conversation is not folded into that bucket. This cannot be turned off without disabling the plugin.
 - The preview refreshes after new content settles, debounced by 350 ms, so a streaming answer does not
   rebuild the clone on every token. Scrolling is rAF-throttled.
-- It is read-only: interactions pass through the preview, and the clone has its ids, images, SVG,
-  canvas, video, form controls and running animations removed, so it stays cheap and cannot interfere
-  with the real conversation.
+- It is read-only: interactions pass through the preview, and the clone has its ids, SVG, canvas, video,
+  form controls and running animations removed, so it stays cheap and cannot interfere with the real
+  conversation.
 
 ## Install / 安装
 
@@ -107,11 +117,12 @@ bar renders correctly even before the marker is applied.
 **Minimap**
 
 1. A fixed-position layer is appended to `document.body` and placed from the scroll container's
-   `getBoundingClientRect()`: to the left of the 14px bar (`right - scrollbarWidth - 6px - 80px`), with
-   the container's top and height. It is `z-index:30`, read-only and never takes layout space. While it
+   `getBoundingClientRect()`: flush against the 14px bar (`right - scrollbarWidth - 80px`), with the
+   container's top, the container's width, and a height capped at half the window (or the container
+   height when that is shorter). It is `z-index:30`, read-only and never takes layout space. While it
    is shown, a stylesheet rule parks Harness's turn-navigation rail (`nav[aria-label="轮次导航"]`) at
-   `right:110px`, i.e. 14px bar + 6px gap + 80px column + 10px breathing room, so the rail's checkpoint
-   bars are no longer painted over; with the column hidden the rail returns to its stock `right:12px`.
+   `right:110px`, clear of the 80px column; with the column hidden the rail returns to its stock
+   `right:12px`.
 2. The chat column is measured on the **live** tree: every message row is a `[data-chat-flow-kind]`
    flex child of a column capped at `max-width: var(--dsh-chat-content-width)` and centred, so a
    rendered row reports the column width exactly. Measuring the clone instead would be wrong — the
@@ -123,14 +134,15 @@ bar renders correctly even before the marker is applied.
    `--dsh-chat-content-width`. It is appended untransformed first, because the natural height is what
    the preview is fitted to.
 4. The clone is transformed with `scale(sx, sy) translate(-columnLeft, 0)`: `sx = 80px / columnWidth`
-   and `sy = paneHeight / naturalHeight`, so the preview always fills the pane the way VS Code's
-   minimap fits a file into its column.
+   and `sy = columnHeight / naturalHeight`, so the whole conversation fills the (capped) column the way
+   VS Code's minimap fits a file into its column. Media keeps its box but is hidden with
+   `visibility:hidden`, matching VS Code, which does not paint images in the minimap.
 5. The slider lives in the preview's own coordinate system, not the scrollbar's: its height is
    `viewportHeight * scaleY` and its top is `scrollTop * scaleY`, clamped to the track, so it always
    marks the viewport the preview is showing. The same scale inverts pointer positions: a click maps
-   `y / scaleY - viewportHeight / 2` back to `scrollTop`, and a drag adds `deltaY / scaleY`. Keeping the
-   mapping in preview coordinates means the slider stays aligned while the clone is still growing and
-   never has to imitate the native thumb's size.
+   `y / scaleY - viewportHeight / 2` back to `scrollTop`, and a drag adds `deltaY / scaleY`. Its colour,
+   square shape and hover-only visibility copy VS Code's `minimapSlider` (`#64646466` light /
+   `#79797966` dark, hover `#646464B3`, active `#BFBFBF33`).
 6. A `MutationObserver` on the anchor rebuilds the clone (trailing 350 ms debounce), a
    `ResizeObserver` plus a window resize listener re-measure the column and pane, and scroll events
    schedule a rAF-throttled slider update.
@@ -138,6 +150,9 @@ bar renders correctly even before the marker is applied.
    split view opens; scans are coalesced to at most one per 120 ms so streaming stays cheap.
 8. Everything hangs off the plugin effect: the stylesheet, layer, markers, observers and listeners are
    all removed on disposal, so disabling the plugin restores the stock UI without a reload.
+9. DSH's "加载更早" button is expanded on a timer: it is clicked as soon as it renders, retried with
+   backoff while it reads "加载中" / "Loading", and the click budget resets when the conversation
+   changes. A disabled or missing button never spins.
 
 ## Configuration
 
@@ -151,8 +166,9 @@ container, so a theme plugin or a user stylesheet can tune them without forking 
 --dsh-vscode-scrollbar-thumb-active  /* dragged thumb color */
 ```
 
-Minimap geometry is fixed in 1.1.0 (80px column, 6px gap, 1180px minimum pane width); it has no
-settings of its own.
+Minimap geometry is fixed (80px column flush against the scrollbar, half-window height cap, 1180px
+minimum pane width); it has no settings of its own. Automatic expansion of "加载更早" pages is also
+unconditional.
 
 ## Compatibility
 
@@ -164,6 +180,12 @@ settings of its own.
 
 ## What's new
 
+- **1.2.0** — the minimap now follows VS Code's own behaviour instead of only its geometry: the column
+  is flush against the scrollbar and capped at half the window height (VS Code uses the full height);
+  the slider is the real `minimapSlider` — square, scrollbar-slider colours, visible only on hover or
+  while dragging; images/video keep their space but are not painted; pressing anywhere in the minimap
+  jumps and starts a drag; the wheel over the minimap scrolls the conversation. DSH's "加载更早"
+  pagination is expanded automatically, so older turns are no longer folded behind it.
 - **1.1.3** — the minimap no longer hides Harness's turn-navigation rail: while the column is shown the
   rail is parked 110px from the right edge, clear of the preview and still clickable. The slider is now
   a pure position overlay — height `viewportHeight * scaleY`, offset `scrollTop * scaleY` — so it marks
