@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "VS Code Scrollbar",
+    "description": "Restyles the conversation scrollbar to match the Visual Studio Code editor: a 14px always-visible bar with a flat, translucent thumb in light and dark mode."
+  }
+}

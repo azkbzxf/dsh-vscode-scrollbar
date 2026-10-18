@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "VS Code 滚动条",
+    "description": "把对话界面的滚动条改成 Visual Studio Code 编辑器样式：14px 常驻滚动条、扁平半透明滑块，浅色与深色主题分别配色。"
+  }
+}
